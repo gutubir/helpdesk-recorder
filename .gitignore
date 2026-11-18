@@ -1,0 +1,12 @@
+# Ambiente Python
+.venv/
+__pycache__/
+*.pyc
+
+# Dados sensíveis: nunca versionar gravações de clientes nem segredos
+atendimentos/
+*.wav
+*.mp3
+*.opus
+*.log
+.env
