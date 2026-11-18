@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+python-multipart
+openai
+
+# desenvolvimento / testes
+pytest
+httpx

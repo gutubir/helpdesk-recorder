@@ -10,3 +10,10 @@ atendimentos/
 *.opus
 *.log
 .env
+
+# Backend
+data/
+*.db
+*.db-wal
+*.db-shm
+.pytest_cache/
