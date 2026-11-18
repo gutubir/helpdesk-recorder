@@ -47,6 +47,6 @@ python app.py
 
 - Se você trocar o fone padrão do Windows no meio da gravação, a trilha do
   sistema para de receber áudio. Troque antes de iniciar.
-- WAV ocupa bastante espaço (~2 MB/min por trilha). A compressão (Opus/MP3)
-  entra no próximo passo, junto com o envio para o backend.
+- WAV ocupa bastante espaço: ~5,5 MB por minuto, por trilha (uma ligação de 20 min
+  gera ~220 MB nos dois arquivos). Por isso o envio ao backend compacta o áudio antes.
 - Avise os clientes que a ligação é gravada (LGPD).
