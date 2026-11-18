@@ -1,25 +1,25 @@
 """
-Helpdesk Recorder - aplicativo da bandeja (MVP 1)
+Helpdesk Recorder - aplicativo da bandeja
 
 Uso:
-  python app.py              -> abre na bandeja (atalho global para iniciar/parar)
-  python app.py --teste 10   -> grava 10 segundos sem bandeja, para validar o áudio
+  python app.py                    -> abre na bandeja (atalho global para iniciar/parar)
+  python app.py --teste 10         -> grava 10 segundos sem bandeja, para validar o áudio
+  python app.py --enviar-pendentes -> envia ao backend o que ainda não foi enviado e sai
 """
 
 import argparse
 import json
 import logging
 import os
-import sys
 import threading
 import time
 from pathlib import Path
 
+from configuracao import carregar_config
+from envio import enviar_pasta, enviar_pendentes, pendentes
 from recorder import Recorder
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.json"
-PADRAO = {"pasta_saida": "atendimentos", "atalho": "ctrl+alt+r"}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,20 +31,13 @@ logging.basicConfig(
 )
 log = logging.getLogger("app")
 
-
-def carregar_config():
-    cfg = dict(PADRAO)
-    if CONFIG_PATH.exists():
-        cfg.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
-    pasta = Path(cfg["pasta_saida"])
-    if not pasta.is_absolute():
-        pasta = BASE_DIR / pasta
-    cfg["pasta_saida"] = pasta
-    return cfg
+# Um envio por vez (parada de gravação, reenvio manual e retentativa de início
+# nunca disputam a mesma pasta).
+_envio_lock = threading.Lock()
 
 
 def modo_teste(segundos):
-    cfg = carregar_config()
+    cfg = carregar_config(BASE_DIR)
     rec = Recorder(cfg["pasta_saida"])
     pasta = rec.start()
     print(f"Gravando {segundos}s em {pasta} ...")
@@ -55,12 +48,20 @@ def modo_teste(segundos):
     print(f"Pronto. Ouça os arquivos em: {pasta}")
 
 
+def modo_enviar_pendentes():
+    cfg = carregar_config(BASE_DIR)
+    lista = pendentes(cfg["pasta_saida"])
+    print(f"{len(lista)} atendimento(s) pendente(s) em {cfg['pasta_saida']}")
+    enviados, falhas = enviar_pendentes(cfg)
+    print(f"Enviados: {enviados} | Falhas: {falhas} (detalhes em helpdesk_recorder.log)")
+
+
 def modo_bandeja():
     import keyboard
     import pystray
     from PIL import Image, ImageDraw
 
-    cfg = carregar_config()
+    cfg = carregar_config(BASE_DIR)
     rec = Recorder(cfg["pasta_saida"])
     estado_lock = threading.Lock()
 
@@ -71,7 +72,7 @@ def modo_bandeja():
         d.ellipse((8, 8, 56, 56), fill=cor)
         return img
 
-    def avisar(tray, msg):
+    def avisar(msg):
         try:
             tray.notify(msg, "Helpdesk Recorder")
         except Exception:
@@ -79,6 +80,32 @@ def modo_bandeja():
 
     tray = None
 
+    # -- envio em segundo plano ------------------------------------------
+    def enviar_em_segundo_plano(pasta):
+        def tarefa():
+            with _envio_lock:
+                try:
+                    resposta = enviar_pasta(pasta, cfg)
+                    avisar(f"Atendimento enviado (#{resposta.get('id')}).")
+                except Exception as e:
+                    log.exception("Falha ao enviar %s", pasta.name)
+                    avisar("Não consegui enviar. O atendimento ficou pendente e será reenviado depois.")
+
+        threading.Thread(target=tarefa, daemon=True).start()
+
+    def reenviar_pendentes(*_):
+        def tarefa():
+            with _envio_lock:
+                lista = pendentes(cfg["pasta_saida"])
+                if not lista:
+                    avisar("Nenhum atendimento pendente.")
+                    return
+                enviados, falhas = enviar_pendentes(cfg)
+                avisar(f"Pendentes: {enviados} enviado(s), {falhas} com falha.")
+
+        threading.Thread(target=tarefa, daemon=True).start()
+
+    # -- gravação ----------------------------------------------------------
     def alternar(*_):
         with estado_lock:
             try:
@@ -86,15 +113,19 @@ def modo_bandeja():
                     pasta, meta = rec.stop()
                     tray.icon = icone(False)
                     tray.title = "Helpdesk Recorder - parado"
-                    avisar(tray, f"Gravação salva ({meta['duracao_segundos']}s).")
+                    if cfg["enviar_automaticamente"]:
+                        avisar(f"Gravação salva ({meta['duracao_segundos']}s). Enviando...")
+                        enviar_em_segundo_plano(pasta)
+                    else:
+                        avisar(f"Gravação salva ({meta['duracao_segundos']}s).")
                 else:
                     rec.start()
                     tray.icon = icone(True)
                     tray.title = "Helpdesk Recorder - GRAVANDO"
-                    avisar(tray, "Gravando atendimento.")
+                    avisar("Gravando atendimento.")
             except Exception as e:
                 log.exception("Erro ao alternar gravação")
-                avisar(tray, f"Erro: {e}")
+                avisar(f"Erro: {e}")
             tray.update_menu()
 
     def abrir_pasta(*_):
@@ -105,7 +136,7 @@ def modo_bandeja():
         with estado_lock:
             if rec.recording:
                 try:
-                    rec.stop()
+                    rec.stop()  # fica pendente; será enviado na próxima abertura
                 except Exception:
                     log.exception("Erro ao finalizar na saída")
         try:
@@ -120,22 +151,34 @@ def modo_bandeja():
             alternar,
             default=True,
         ),
+        pystray.MenuItem("Reenviar pendentes", reenviar_pendentes),
         pystray.MenuItem("Abrir pasta das gravações", abrir_pasta),
         pystray.MenuItem("Sair", sair),
     )
     tray = pystray.Icon("helpdesk_recorder", icone(False), "Helpdesk Recorder - parado", menu)
 
     keyboard.add_hotkey(cfg["atalho"], alternar)
-    log.info("Pronto. Atalho global: %s", cfg["atalho"])
-    tray.run()
+    log.info("Pronto. Atalho global: %s | backend: %s", cfg["atalho"], cfg["backend_url"])
+
+    def ao_iniciar(icon):
+        icon.visible = True
+        if cfg["enviar_automaticamente"] and pendentes(cfg["pasta_saida"]):
+            log.info("Há atendimentos pendentes; tentando enviar.")
+            reenviar_pendentes()
+
+    tray.run(setup=ao_iniciar)
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--teste", type=int, metavar="SEGUNDOS",
                     help="grava N segundos sem abrir a bandeja")
+    ap.add_argument("--enviar-pendentes", action="store_true",
+                    help="envia ao backend os atendimentos ainda não enviados e sai")
     args = ap.parse_args()
     if args.teste:
         modo_teste(args.teste)
+    elif args.enviar_pendentes:
+        modo_enviar_pendentes()
     else:
         modo_bandeja()
