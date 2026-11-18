@@ -1,4 +1,9 @@
 {
   "pasta_saida": "atendimentos",
-  "atalho": "ctrl+alt+r"
+  "atalho": "ctrl+alt+r",
+  "backend_url": "http://localhost:8000",
+  "enviar_automaticamente": true,
+  "compactar_antes_de_enviar": true,
+  "apagar_local_apos_envio": false,
+  "ffmpeg": "ffmpeg"
 }

@@ -17,3 +17,7 @@ data/
 *.db-wal
 *.db-shm
 .pytest_cache/
+
+# Gravador: configuração local com token
+recorder/config.local.json
+config.local.json
