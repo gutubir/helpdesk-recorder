@@ -1,0 +1,5 @@
+PyAudioWPatch
+numpy
+pystray
+Pillow
+keyboard
